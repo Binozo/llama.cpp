@@ -2640,12 +2640,36 @@ class XLMRobertaModel(BertModel):
         # to avoid TypeError: Descriptors cannot be created directly
         # exception when importing sentencepiece_model_pb2
         os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
-        from sentencepiece import SentencePieceProcessor
+        from sentencepiece import SentencePieceProcessor, SentencePieceTrainer
         from sentencepiece import sentencepiece_model_pb2 as model
 
-        tokenizer_path = self.dir_model / 'sentencepiece.bpe.model'
+        sentencepiece_model = 'sentencepiece.bpe.model'
+        tokenizer_path = self.dir_model / sentencepiece_model
         if not tokenizer_path.is_file():
-            raise FileNotFoundError(f"File not found: {tokenizer_path}")
+            logger.info(f"File {sentencepiece_model} not found. Trying to generate it instead")
+
+            with open(self.dir_model / "tokenizer.json", "r", encoding="utf-8") as f:
+                tokenizer_info = json.load(f)
+            vocab = tokenizer_info["model"]["vocab"]
+
+            #sentencepiece.bpe.vocab
+            with open(self.dir_model / "vocab.txt", "w", encoding="utf-8") as f:
+                for token, score in vocab:
+                    f.write(f"{token} {score}\n")
+
+            SentencePieceTrainer.train(
+                input=self.dir_model / "vocab.txt",
+                model_prefix=self.dir_model / "sentencepiece.bpe",
+                vocab_size=len(vocab),
+                model_type="unigram",
+            )
+            # References: 
+            # https://github.com/ggerganov/llama.cpp/issues/7924#issuecomment-2283988072
+            # ! https://github.com/ggerganov/llama.cpp/pull/8922#pullrequestreview-2235151135
+            # https://github.com/ggerganov/llama.cpp/discussions/2948
+            # https://github.com/ggerganov/llama.cpp/pull/8089
+            # https://github.com/ggerganov/llama.cpp/pull/8658
+            # https://github.com/ggerganov/llama.cpp/pull/4406
 
         sentencepiece_model = model.ModelProto()  # pyright: ignore[reportAttributeAccessIssue]
         sentencepiece_model.ParseFromString(open(tokenizer_path, "rb").read())
@@ -2728,6 +2752,9 @@ class XLMRobertaModel(BertModel):
         if name == "embeddings.position_embeddings.weight":
             if self._position_offset is not None:
                 data_torch = data_torch[self._position_offset:,:]
+
+        if ("embeddings.token_type_embeddings.parametrizations.weight.0.lora_", "embeddings.word_embeddings.parametrizations.weight.0.lora_" in name) or ("embeddings.token_type_embeddings.parametrizations.weight.original" in name):
+            return [] # Skip lora mapping
 
         return super().modify_tensors(data_torch, name, bid)
 
